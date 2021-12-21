@@ -1,6 +1,6 @@
 # LightTrack: Finding Lightweight Neural Networks for Object Tracking via One-Shot Architecture Search
 
-The official implementation of the paper 
+The [official implementation](https://github.com/researchmm/LightTrack) of the paper 
 
 [**LightTrack: Finding Lightweight Neural Networks for Object Tracking via One-Shot Architecture Search**](https://arxiv.org/abs/2104.14545)
 
