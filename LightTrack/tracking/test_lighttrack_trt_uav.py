@@ -7,13 +7,12 @@ if env_path not in sys.path:
 import cv2
 import yaml
 import numpy as np
-# import pycuda.autoinit
 import tensorrt as trt
 import pycuda.driver as cuda
 import argparse
 import threading
 from easydict import EasyDict as edict
-
+import onnxruntime
 import torch
 import torch.nn.functional as F
 from lib.utils.utils import load_yaml, im_to_torch, get_subwindow_tracking, make_scale_pyramid, python2round
@@ -31,6 +30,7 @@ class Lighttrack(object):
         self.even = even
         self.mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
         self.std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        self.ort_session_z = onnxruntime.InferenceSession(os.path.join(os.path.dirname(__file__), '../model_backbone.onnx)) #load the onnx model of backone for template feature.
 
     def normalize(self, x):
         """ input is in (C,H,W) format"""
@@ -38,8 +38,11 @@ class Lighttrack(object):
         x -= self.mean
         x /= self.std
         return x
+  
+    def to_numpy(self, tensor):
+        return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
 
-    def init(self, im, target_pos, target_sz, model):
+    def init(self, im, target_pos, target_sz):
         state = dict()
 
         p = Config(stride=self.stride, even=self.even)
@@ -51,8 +54,8 @@ class Lighttrack(object):
         prefix = [x for x in ['OTB', 'VOT'] if x in self.info.dataset]
         if len(prefix) == 0:
             prefix = [self.info.dataset]
-        yaml_path = os.path.join(os.path.dirname(__file__), '../experiments/test/VOT/', 'LightTrack.yaml')
-        cfg = load_yaml(yaml_path)
+        yaml_path = os.path.join(os.path.dirname(__file__), '../experiments/test/VOT/', 'LightTrack.yaml') 
+        cfg = load_yaml(yaml_path)  #modify the dataset name of yaml if you want to test other datasets
         cfg_benchmark = cfg[self.info.dataset]
         p.update(cfg_benchmark)
         p.renew()
@@ -60,13 +63,11 @@ class Lighttrack(object):
         # if ((target_sz[0] * target_sz[1]) / float(state['im_h'] * state['im_w'])) < 0.004:
         #     p.instance_size = cfg_benchmark['big_sz']
         #     p.renew()
-        # else:
+        # else:  #modify fixed size of input image
         p.instance_size = cfg_benchmark['small_sz']
         p.renew()
 
         self.grids(p)  # self.grid_to_search_x, self.grid_to_search_y
-
-        net = model
 
         wc_z = target_sz[0] + p.context_amount * sum(target_sz)
         hc_z = target_sz[1] + p.context_amount * sum(target_sz)
@@ -76,7 +77,9 @@ class Lighttrack(object):
         z_crop, _ = get_subwindow_tracking(im, target_pos, p.exemplar_size, s_z, avg_chans)
         z_crop = self.normalize(z_crop)
         z = z_crop.unsqueeze(0)
-        self.zf = net.template(z.cuda())
+        ort_inputs_z = {'template': self.to_numpy(z).astype(np.float32)}
+        self.ort_outs = self.ort_session_z.run(None, ort_inputs_z)
+        self.zf = self.ort_outs[0]                                                               
 
         if p.windowing == 'cosine':
             window = np.outer(np.hanning(p.score_size), np.hanning(p.score_size))  # [17,17]
@@ -95,8 +98,7 @@ class Lighttrack(object):
         return state
 
     def update(self, net, x_crops, target_pos, target_sz, window, scale_z, p, debug=False):
-        zf = self.zf.detach().cpu().numpy().astype(np.float32)
-        cls_score, bbox_pred = net.track(x_crops, zf)
+        cls_score, bbox_pred = net.track(x_crops, self.zf.astype(np.float32)
         # print(cls_score)
         # cls_score, bbox_pred = net.track(x_crops)
         cls_score = torch.from_numpy(cls_score).reshape(1,1,16,16)
@@ -264,7 +266,6 @@ class inferThread(threading.Thread):
 
     def run(self,args):
         dataset_root = ''
-        net_path = ''
         siam_info = edict()
         siam_info.arch = args.arch
         siam_info.dataset = args.dataset
@@ -272,16 +273,6 @@ class inferThread(threading.Thread):
 
         # create model
         tracker = Lighttrack(siam_info, even=args.even)
-        if args.path_name != 'NULL':
-            siam_net = models.__dict__[args.arch](args.path_name, stride=siam_info.stride)
-        else:
-            siam_net = models.__dict__[args.arch](stride=siam_info.stride)
-
-        print('===> init Siamese <====')
-
-        siam_net = load_pretrain(siam_net, args.resume)
-        siam_net.eval()
-        siam_net = siam_net.cuda()
         net = LightTrackTRT()
         # create dataset
         dataset = DatasetFactory.create_dataset(name=args.dataset,
@@ -306,7 +297,7 @@ class inferThread(threading.Thread):
                     target_pos = np.array([cx, cy])
                     target_sz = np.array([w, h])
                     gt_bbox_ = [cx-w/2, cy-h/2, w, h]
-                    state = tracker.init(img, target_pos, target_sz, siam_net)
+                    state = tracker.init(img, target_pos, target_sz)
                     pred_bbox = gt_bbox_
                     pred_bboxes.append(pred_bbox)
                 else:
@@ -353,7 +344,6 @@ if __name__ == '__main__':
     parser.add_argument('--arch', dest='arch', help='backbone architecture')
     parser.add_argument('--stride', type=int, help='network stride')
     parser.add_argument('--even', type=int, default=0)
-    parser.add_argument('--resume', type=str, help='pretrained model')
     parser.add_argument('--path_name', type=str, default='NULL')
     args = parser.parse_args()  
     thread1 = inferThread()
