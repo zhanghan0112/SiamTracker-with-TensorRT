@@ -45,7 +45,7 @@ Check which version of TensorRT has been installed on your Jetson system:
 ## Test TensorRT model
   + In LightTrack repo, modify engine path in `lib/models/lighttrack_speed_trt.py`, then run:
     ```python
-    python3 tracking/test_lighttrack_trt_uav.py
+    python3 tracking/test_lighttrack_trt_uav.py --arch LightTrackM_Subnet --dataset UAV123 --stride 16 --even 0 --path_name back_04502514044521042540+cls_211000022+reg_100000111_ops_32
     ```
 ## Evaluate performance
  + Put the results folder under pysot, evaluation please refer to [pysot](https://github.com/STVIR/pysot).
