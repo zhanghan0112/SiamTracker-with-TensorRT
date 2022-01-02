@@ -42,7 +42,6 @@ class LightTrackM_Subnet(Super_model_DP_retrain):
                                       inchannels=adj_channel, linear_reg=True, towernum=model_cfg.tower_num)
     
     def forward(self, zf, search):
-        zf = self.features(zf)
         xf = self.features(search)
         zf, xf = self.neck(zf,xf)
         feat_dict = self.feature_fusor(zf, xf)
